@@ -1,17 +1,74 @@
-import { useA11y } from "../context/AccessibilityContext";
+import React, { useState, useEffect } from 'react';
+import { useAccessibility } from '../contexts/AccessibilityContext.jsx';
 
 export default function AccessibilityToggle() {
-  const { highContrast, toggleHighContrast } = useA11y();
+  const {
+    enabled, toggleEnabled,
+    highContrast, toggleHighContrast,
+    increaseFont, decreaseFont, reset,
+    readPage, readSelection, stopReading, fontScale
+  } = useAccessibility();
+
+  const [open, setOpen] = useState(false);
+
+  const onMainClick = () => {
+    // jeśli ON → wyłącz i zamknij panel
+    if (highContrast) {
+      toggleHighContrast();
+      setOpen(false);
+      return;
+    }
+    // jeśli OFF → włącz i otwórz panel
+    if (!enabled) toggleEnabled();
+    toggleHighContrast();
+    setOpen(true);
+  };
+
+  // Alt + A — tylko otwórz/zamknij panel (bez zmiany HC)
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.altKey && (e.key === 'a' || e.key === 'A')) {
+        setOpen(v => !v);
+        e.preventDefault();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   return (
-    <button
-      type="button"
-      onClick={toggleHighContrast}
-      aria-pressed={highContrast}
-      aria-label="Przełącz tryb wysokiego kontrastu"
-      className="focus-outline px-3 py-2 rounded border border-[var(--border)] bg-[var(--card)] text-[var(--fg)] hover:opacity-90 transition"
-    >
-      {highContrast ? "Wysoki kontrast: ON" : "Wysoki kontrast: OFF"}
-    </button>
+    <>
+      <button
+        aria-label="Tryb dostępności"
+        className="a11y-fab"
+        onClick={onMainClick}
+      >
+        {highContrast ? 'TRYB: ON' : 'TRYB DOSTĘPNOŚCI'}
+      </button>
+
+      {open && (
+        <div className="a11y-panel" role="group" aria-label="Ustawienia dostępności">
+          <div className="a11y-row">
+            <button onClick={increaseFont} aria-label="Powiększ czcionkę">A+</button>
+            <button onClick={decreaseFont} aria-label="Pomniejsz czcionkę">A-</button>
+            <button onClick={reset} aria-label="Resetuj ustawienia">Reset</button>
+          </div>
+
+          <div className="a11y-row">
+            <button onClick={toggleHighContrast} aria-pressed={highContrast}>
+              {highContrast ? 'Kontrast: ON' : 'Kontrast: OFF'}
+            </button>
+          </div>
+
+          <div className="a11y-row">
+            <button onClick={readSelection} aria-label="Czytaj zaznaczenie">Czytaj zaznaczenie</button>
+            <button onClick={readPage} aria-label="Czytaj stronę">Czytaj stronę</button>
+            <button onClick={stopReading} aria-label="Zatrzymaj czytanie">Stop</button>
+          </div>
+
+          <small style={{opacity:.75}}>Skala: {(fontScale*100).toFixed(0)}%</small>
+        </div>
+      )}
+    </>
   );
 }
