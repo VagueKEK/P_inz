@@ -2,6 +2,7 @@ import React from "react";
 import { BrowserRouter as Router, Routes, Route, NavLink } from "react-router-dom";
 import SubscriptionPanel from "./components/SubscriptionPanel";
 
+
 import { AccessibilityProvider } from "./contexts/AccessibilityContext.jsx";
 import AccessibilityToggle from "./components/AccessibilityToggle.jsx";
 

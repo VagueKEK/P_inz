@@ -1,7 +1,36 @@
+// src/components/SubscriptionPanel.jsx
 import { useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 
-const API_URL = "http://localhost:8000/api/subscriptions/";
+const API_ROOT = "http://localhost:8000";
+const API_URL = `${API_ROOT}/api/subscriptions/`;
+const CSRF_URL = `${API_ROOT}/api/csrf/`;
+
+/* ---------- axios + CSRF ---------- */
+function getCookie(name) {
+  const all = document.cookie ? document.cookie.split("; ") : [];
+  for (const entry of all) {
+    const idx = entry.indexOf("=");
+    const k = idx > -1 ? entry.slice(0, idx) : entry;
+    const v = idx > -1 ? entry.slice(idx + 1) : "";
+    if (k === name) return decodeURIComponent(v);
+  }
+  return null;
+}
+
+const http = axios.create({
+  baseURL: API_ROOT,
+  withCredentials: true,
+  headers: { Accept: "application/json" },
+});
+http.interceptors.request.use((config) => {
+  const unsafe = !/^(GET|HEAD|OPTIONS|TRACE)$/i.test(config.method || "GET");
+  if (unsafe) {
+    const token = getCookie("csrftoken");
+    if (token) config.headers["X-CSRFToken"] = token;
+  }
+  return config;
+});
 
 /* ---------- helpers ---------- */
 const pad2 = (n) => (n < 10 ? `0${n}` : `${n}`);
@@ -9,26 +38,31 @@ const toISO = (d) => {
   const dt = new Date(d);
   return `${dt.getFullYear()}-${pad2(dt.getMonth() + 1)}-${pad2(dt.getDate())}`;
 };
+const isISO = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ""));
+const s = (x) => (x ?? "").toString();
+const cleanPrice = (x) => s(x).replace(",", ".").trim();
+// liczba bezpiecznie (łapie przecinek, NaN -> 0)
+const toNum = (x) => {
+  const n = parseFloat(String(x ?? "").replace(",", "."));
+  return Number.isFinite(n) ? n : 0;
+};
+
 const daysBetween = (a, b) => {
   const d1 = new Date(a); d1.setHours(0,0,0,0);
   const d2 = new Date(b); d2.setHours(0,0,0,0);
   return Math.round((d2 - d1) / (1000 * 60 * 60 * 24));
 };
 const nextMonthlyDate = (anchor /* yyyy-mm-dd */) => {
+  if (!isISO(anchor)) return null;
   const a = new Date(anchor);
   const t = new Date(); t.setHours(0,0,0,0);
-
-  // jeśli anchor w przyszłości → to on jest najbliższy
   if (a >= t) return a;
-
-  // w przeciwnym razie dodajemy miesiące aż przekroczymy "dziś"
   const baseDay = a.getDate();
   let m = a.getMonth(), y = a.getFullYear();
   let candidate = new Date(a);
   while (candidate < t) {
     m += 1;
     if (m > 11) { m = 0; y += 1; }
-    // ustaw dzień z zachowaniem końca miesiąca
     const nd = new Date(y, m, 1);
     const lastDay = new Date(y, m + 1, 0).getDate();
     nd.setDate(Math.min(baseDay, lastDay));
@@ -39,27 +73,17 @@ const nextMonthlyDate = (anchor /* yyyy-mm-dd */) => {
 
 /* ---------- ACCESSIBILITY (dock) ---------- */
 function useAccessibility() {
-  const [highContrast, setHighContrast] = useState(() => {
-    const v = localStorage.getItem("ui_high_contrast");
-    return v === "1";
-  });
-  const [fontScale, setFontScale] = useState(() => {
-    const v = localStorage.getItem("ui_font_scale");
-    return v ? Number(v) : 1;
-  });
+  const [highContrast, setHighContrast] = useState(() => localStorage.getItem("ui_high_contrast") === "1");
+  const [fontScale, setFontScale] = useState(() => Number(localStorage.getItem("ui_font_scale") || 1));
 
-  // apply to <html>
   useEffect(() => {
-    const html = document.documentElement;
-    html.style.setProperty("--font-scale", `${fontScale}`);
+    document.documentElement.style.setProperty("--font-scale", `${fontScale}`);
     localStorage.setItem("ui_font_scale", String(fontScale));
   }, [fontScale]);
 
-  // high contrast + wipe animation
   useEffect(() => {
     const body = document.body;
-    if (highContrast) body.classList.add("hc");
-    else body.classList.remove("hc");
+    body.classList.toggle("hc", highContrast);
     localStorage.setItem("ui_high_contrast", highContrast ? "1" : "0");
 
     const wipe = document.createElement("div");
@@ -75,21 +99,20 @@ function useAccessibility() {
   const reset = () => setFontScale(1);
   const toggleContrast = () => setHighContrast((v) => !v);
 
-  // Web Speech API
   const speakSelection = () => {
-    const s = window.getSelection?.().toString().trim();
-    if (!s) return;
+    const txt = window.getSelection?.().toString().trim();
+    if (!txt) return;
     window.speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(s);
+    const u = new SpeechSynthesisUtterance(txt);
     u.lang = "pl-PL";
     window.speechSynthesis.speak(u);
   };
 
-  return { highContrast, fontScale, inc, dec, reset, toggleContrast, speakSelection };
+  return { highContrast, inc, dec, reset, toggleContrast, speakSelection };
 }
 
 function A11yDock({ a11y }) {
-  if (!a11y.highContrast) return null; // narzędzia tylko w trybie dostępności
+  if (!a11y.highContrast) return null;
   return (
     <div className="a11y-dock">
       <button className="btn btn-sky" onClick={a11y.inc}>A+</button>
@@ -99,8 +122,6 @@ function A11yDock({ a11y }) {
     </div>
   );
 }
-
-
 
 /* ---------- MAIN ---------- */
 export default function SubscriptionPanel() {
@@ -124,22 +145,23 @@ export default function SubscriptionPanel() {
 
   /* ---- load ---- */
   const fetchSubs = async () => {
-    const res = await axios.get(API_URL);
-    setSubs(res.data || []);
+    const res = await http.get(API_URL);
+    const rows = Array.isArray(res.data) ? res.data : res.data.results || [];
+    setSubs(rows.map((r) => ({ ...r, next_payment_date: r.next_payment ?? null })));
   };
-  useEffect(() => { fetchSubs(); }, []);
+  useEffect(() => { http.get(CSRF_URL).finally(fetchSubs); }, []);
 
   /* ---- persist limit ---- */
   useEffect(() => { localStorage.setItem("limit_on", limitOn ? "1" : "0"); }, [limitOn]);
-  useEffect(() => { localStorage.setItem("limit_val", limitValue); }, [limitValue]);
+  useEffect(() => { localStorage.setItem("limit_val", String(limitValue)); }, [limitValue]);
 
   /* ---- mutations ---- */
   const handleAdd = async () => {
     if (!name.trim() || !price || !date) return;
-    await axios.post(API_URL, {
+    await http.post(API_URL, {
       name: name.trim(),
-      price,
-      next_payment_date: date,
+      price: cleanPrice(price) || "0",
+      next_payment: isISO(date) ? date : null, // backend field
       active: true,
     });
     setName(""); setPrice(""); setDate("");
@@ -148,19 +170,19 @@ export default function SubscriptionPanel() {
   };
 
   const handleDelete = async (id) => {
-    await axios.delete(`${API_URL}${id}/`);
+    await http.delete(`${API_URL}${id}/`);
     fetchSubs();
   };
 
   const handleToggleActive = async (id, active) => {
-    await axios.patch(`${API_URL}${id}/`, { active: !active });
+    await http.patch(`${API_URL}${id}/`, { active: !active });
     fetchSubs();
   };
 
   const startEditing = (s) => {
     setEditingId(s.id);
-    setEditingPrice(s.price);
-    setEditingDate(s.next_payment_date);
+    setEditingPrice(s.price?.toString() ?? "");
+    setEditingDate(isISO(s.next_payment_date) ? s.next_payment_date : "");
   };
   const cancelEdit = () => {
     setEditingId(null);
@@ -168,9 +190,9 @@ export default function SubscriptionPanel() {
     setEditingDate("");
   };
   const saveEdit = async (id) => {
-    await axios.patch(`${API_URL}${id}/`, {
-      price: editingPrice,
-      next_payment_date: editingDate,
+    await http.patch(`${API_URL}${id}/`, {
+      price: cleanPrice(editingPrice),
+      next_payment: isISO(editingDate) ? editingDate : null, // backend field
     });
     cancelEdit();
     fetchSubs();
@@ -185,10 +207,10 @@ export default function SubscriptionPanel() {
     switch (sortOption) {
       case "name-asc": r.sort((a,b)=>a.name.localeCompare(b.name)); break;
       case "name-desc": r.sort((a,b)=>b.name.localeCompare(a.name)); break;
-      case "price-asc": r.sort((a,b)=>parseFloat(a.price)-parseFloat(b.price)); break;
-      case "price-desc": r.sort((a,b)=>parseFloat(b.price)-parseFloat(a.price)); break;
-      case "date-asc": r.sort((a,b)=>new Date(a.next_payment_date)-new Date(b.next_payment_date)); break;
-      case "date-desc": r.sort((a,b)=>new Date(b.next_payment_date)-new Date(a.next_payment_date)); break;
+      case "price-asc": r.sort((a,b)=>toNum(a.price)-toNum(b.price)); break;
+      case "price-desc": r.sort((a,b)=>toNum(b.price)-toNum(a.price)); break;
+      case "date-asc": r.sort((a,b)=>new Date(a.next_payment_date || "2100-01-01")-new Date(b.next_payment_date || "2100-01-01")); break;
+      case "date-desc": r.sort((a,b)=>new Date(b.next_payment_date || "1900-01-01")-new Date(a.next_payment_date || "1900-01-01")); break;
       default: break;
     }
     return r;
@@ -203,20 +225,27 @@ export default function SubscriptionPanel() {
     [subs, filterText, sortOption]
   );
 
-  const monthlyTotal = activeSubs.reduce((acc, s) => acc + Number(s.price || 0), 0);
+  // *** SUMA: po WSZYSTKICH aktywnych, nie po przefiltrowanych
+  const monthlyTotal = subs
+    .filter((s) => s.active)
+    .reduce((acc, x) => acc + toNum(x.price), 0);
 
   /* ---- next payment summary ---- */
   const todayISO = useMemo(() => toISO(new Date()), []);
   const nextPayment = useMemo(() => {
-    if (!activeSubs.length) return null;
-    const candidates = activeSubs.map((s) => {
-      const anchor = s.next_payment_date;
-      const due = nextMonthlyDate(anchor);
-      return { ...s, due, days: daysBetween(todayISO, due) };
-    });
+    const valids = activeSubs.filter((s) => isISO(s.next_payment_date));
+    if (!valids.length) return null;
+    const candidates = valids.map((s) => {
+      const due = nextMonthlyDate(s.next_payment_date);
+      return due ? { ...s, due, days: daysBetween(todayISO, due) } : null;
+    }).filter(Boolean);
     candidates.sort((a, b) => a.due - b.due);
-    return candidates[0];
+    return candidates[0] || null;
   }, [activeSubs, todayISO]);
+
+  /* ---- limit ---- */
+  const limitNum = toNum(limitValue);
+  const overLimit = limitOn && limitNum > 0 && monthlyTotal > limitNum;
 
   /* ---- render ---- */
   const renderSub = (s) => {
@@ -228,8 +257,8 @@ export default function SubscriptionPanel() {
           <div className="sub-name">{s.name}</div>
           {!isEditing ? (
             <div className="sub-meta">
-              <span className="badge">{Number(s.price).toFixed(2)} zł</span>
-              <span className="muted"> — {s.next_payment_date}</span>
+              <span className="badge">{toNum(s.price).toFixed(2)} zł</span>
+              <span className="muted"> — {s.next_payment_date || "—"}</span>
             </div>
           ) : (
             <div className="edit-inline">
@@ -278,10 +307,6 @@ export default function SubscriptionPanel() {
     );
   };
 
-  /* limit kolor */
-  const overLimit =
-    limitOn && limitValue && Number(limitValue) > 0 && monthlyTotal > Number(limitValue);
-
   return (
     <>
       <A11yDock a11y={a11y} />
@@ -328,7 +353,9 @@ export default function SubscriptionPanel() {
             <div className="stat-label">Suma aktywnych</div>
             <div className="stat-value">
               {monthlyTotal.toFixed(2)} zł / miesiąc
-              {overLimit && <span className="stat-cap"> (limit: {Number(limitValue).toFixed(2)} zł)</span>}
+              {limitOn && limitNum > 0 && (
+                <span className="stat-cap"> (limit: {limitNum.toFixed(2)} zł)</span>
+              )}
             </div>
           </div>
 
@@ -340,7 +367,7 @@ export default function SubscriptionPanel() {
               <div className={`next-pay ${nextPayment.days <= 7 ? "soon" : ""}`}>
                 <div className="bold">{nextPayment.name}</div>
                 <div className="muted">
-                  {Number(nextPayment.price).toFixed(2)} zł — {toISO(nextPayment.due)} (
+                  {toNum(nextPayment.price).toFixed(2)} zł — {toISO(nextPayment.due)} (
                   {nextPayment.days === 0 ? "Dzisiaj" : `za ${nextPayment.days} dni`})
                 </div>
               </div>
@@ -359,9 +386,10 @@ export default function SubscriptionPanel() {
               Włącz limit miesięcznych wydatków
             </label>
             <input
-              type="number"
+              type="text"
+              inputMode="decimal"
               className="input"
-              placeholder="np. 500"
+              placeholder="np. 500 lub 500,00"
               disabled={!limitOn}
               value={limitValue}
               onChange={(e) => setLimitValue(e.target.value)}

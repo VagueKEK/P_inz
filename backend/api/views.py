@@ -1,8 +1,8 @@
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from api.models import Subscription           
-from api.serializers import SubscriptionSerializer
+from .models import Subscription
+from .serializers import SubscriptionSerializer
 
 class SubscriptionViewSet(viewsets.ModelViewSet):
     queryset = Subscription.objects.all().order_by("id")
