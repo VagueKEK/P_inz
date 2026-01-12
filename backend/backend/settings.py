@@ -8,13 +8,10 @@ DEBUG = True
 ALLOWED_HOSTS = ["*"]
 
 INSTALLED_APPS = [
-    # Django
     'django.contrib.admin','django.contrib.auth','django.contrib.contenttypes',
     'django.contrib.sessions','django.contrib.messages','django.contrib.staticfiles',
-    # 3rd
     'rest_framework',
     'corsheaders',
-    # lokalna apka – TYLKO RAZ
     'api',
 ]
 
@@ -45,26 +42,26 @@ TEMPLATES = [{
 
 WSGI_APPLICATION = 'backend.wsgi.application'
 
-# Postgres – PODSTAW SWOJE DANE
+
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'projekt',
-        'USER': 'postgres',
-        'PASSWORD': 'admin',
-        'HOST': 'localhost',
-        'PORT': '5432',
+        'NAME': os.environ.get('DB_NAME', 'SubSense'),
+        'USER': os.environ.get('DB_USER', 'SubSenseadmin'),
+        'PASSWORD': os.environ.get('DB_PASSWORD', 'SubSenseadmin'),
+        'HOST': os.environ.get('DB_HOST', 'localhost'),
+        'PORT': os.environ.get('DB_PORT', '5432'),
     }
 }
 
 STATIC_URL = '/static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
 
-# CORS/CSRF – front na 5173
 CORS_ALLOWED_ORIGINS = ["http://localhost:5173","http://127.0.0.1:5173"]
 CORS_ALLOW_CREDENTIALS = True
 CSRF_TRUSTED_ORIGINS = ["http://localhost:5173","http://127.0.0.1:5173"]
 
-# DRF bez paginacji (żeby front nie musiał robić data.results)
+
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": ["rest_framework.authentication.SessionAuthentication"],
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.AllowAny"],
