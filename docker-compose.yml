@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  # Baza danych
+  db:
+    image: postgres:15
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_DB=SubSense
+      - POSTGRES_USER=SubSenseadmin
+      - POSTGRES_PASSWORD=SubSenseadmin
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U SubSenseadmin -d SubSense"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Backend (Django)
+  backend:
+    build:
+      context: ./backend
+    depends_on:
+      db:
+        condition: service_healthy
+    command: python manage.py runserver 0.0.0.0:8000
+    volumes:
+      - ./backend:/app
+    ports:
+      - "8000:8000"
+    environment:
+      - DB_NAME=SubSense
+      - DB_USER=SubSenseadmin
+      - DB_PASSWORD=SubSenseadmin
+      - DB_HOST=db
+      - DB_PORT=5432
+
+  # Frontend (React + Vite)
+  frontend:
+    build:
+      context: ./frontend
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_URL=http://localhost:8000
+
+volumes:
+  postgres_data:
