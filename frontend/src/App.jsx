@@ -14,7 +14,6 @@ function TopNav() {
         <div className="nav-links">
           <NavLink to="/" end className="nav-link">Subskrypcje</NavLink>
           <NavLink to="/calendar" className="nav-link">Kalendarz</NavLink>
-          <NavLink to="/vod" className="nav-link" onClick={(e)=>e.preventDefault()}>VoD</NavLink>
           <NavLink to="/summary" className="nav-link">Podsumowanie</NavLink>
           <NavLink to="/settings" className="nav-link">Ustawienia</NavLink>
         </div>

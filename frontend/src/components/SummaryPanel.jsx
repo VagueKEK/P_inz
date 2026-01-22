@@ -1,12 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import useAppSettings from "../hooks/useAppSettings";
+import { createPortal } from "react-dom";
 
 const API_URL = "http://localhost:8000/api/subscriptions/";
 
-/* ---------- helpers (spójne z Calendar.jsx) ---------- */
 const pad2 = (n) => (n < 10 ? `0${n}` : `${n}`);
-const iso = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 const isISO = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ""));
 const toNum = (x) => {
   const n = parseFloat(String(x ?? "").replace(",", "."));
@@ -46,59 +45,143 @@ function occurrencesFrom(anchorISO, startDate, untilDate) {
   return out;
 }
 
-/* ---------- mini chart (SVG, bez zależności) ---------- */
-function BarChart({ data, height = 240, currency = "" }) {
-  // data: [{ label, value }]
-  const max = Math.max(0, ...data.map((d) => d.value));
-  const barW = 36;
-  const gap = 18;
+function hash32(str) {
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+function colorFromKey(key) {
+  const h = hash32(String(key));
+  const hue = h % 360;
+  return `hsl(${hue} 75% 55%)`;
+}
+
+function Tip({ tip }) {
+  if (!tip) return null;
+  return createPortal(
+    <div
+      className="chart-tooltip-fixed"
+      style={{
+        left: tip.x,
+        top: tip.y,
+        transform: "translate(-50%, calc(-100% - 12px))",
+      }}
+    >
+      <div className="chart-tooltip-title">{tip.title}</div>
+      <div className="chart-tooltip-value">{tip.value}</div>
+    </div>,
+    document.body
+  );
+}
+
+function BarChart({ data, height = 260, currency = "", highlightMax = false }) {
+  const maxVal = Math.max(0, ...data.map((d) => d.value));
+  const maxIndex = useMemo(() => {
+    let bestI = -1;
+    let bestV = -Infinity;
+    for (let i = 0; i < data.length; i++) {
+      const v = data[i]?.value ?? 0;
+      if (v > bestV) {
+        bestV = v;
+        bestI = i;
+      }
+    }
+    return bestI;
+  }, [data]);
+
+  const barW = 48;
+  const gap = 26;
   const width = data.length * (barW + gap) + gap;
 
+  const [tip, setTip] = useState(null);
+  const [selectedKey, setSelectedKey] = useState(null);
+  const [animKey, setAnimKey] = useState(0);
+
+  useEffect(() => {
+    const close = () => {
+      setTip(null);
+      setSelectedKey(null);
+    };
+    window.addEventListener("pointerdown", close, true);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close, true);
+    return () => {
+      window.removeEventListener("pointerdown", close, true);
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", close, true);
+    };
+  }, []);
+
+  const onBarPointerDown = (e, d) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const key = String(d.id ?? d.full ?? d.label);
+    setSelectedKey(key);
+    setAnimKey((k) => k + 1);
+
+    setTip({
+      x: e.clientX,
+      y: e.clientY,
+      title: d.full || d.label || "—",
+      value: `${d.value.toFixed(2)} ${currency}`.trim(),
+    });
+  };
+
   return (
-    <div className="chart-scroll">
-      <svg
-        viewBox={`0 0 ${width} ${height}`}
-        width="100%"
-        height={height}
-        preserveAspectRatio="xMidYMax meet"
-      >
-        {/* oś X */}
-        <line x1="0" y1={height - 28} x2={width} y2={height - 28} stroke="rgba(255,255,255,.15)" />
+    <div className="chart-scroll" onPointerDown={(e) => e.stopPropagation()}>
+      <Tip tip={tip} />
+
+      <svg viewBox={`0 0 ${width} ${height}`} width={width} height={height} style={{ display: "block" }}>
+        <line x1="0" y1={height - 34} x2={width} y2={height - 34} stroke="rgba(255,255,255,.15)" />
 
         {data.map((d, i) => {
           const x = gap + i * (barW + gap);
-          const h = max > 0 ? Math.round(((d.value / max) * (height - 60))) : 0;
-          const y = height - 28 - h;
+          const h = maxVal > 0 ? Math.round((d.value / maxVal) * (height - 82)) : 0;
+          const y = height - 34 - h;
+
+          const key = String(d.id ?? d.full ?? d.label ?? i);
+          const isSelected = selectedKey === key;
+          const isMax = highlightMax && maxVal > 0 && i === maxIndex;
+
+          const fill = colorFromKey(d.full || d.label || key);
+          const xCenter = x + barW / 2;
+
+          const rectClass = [
+            "chart-bar-rect",
+            isMax ? "chart-bar-rect--max" : "",
+            isSelected ? "chart-bar-rect--selected" : "",
+          ]
+            .filter(Boolean)
+            .join(" ");
+
           return (
-            <g key={i}>
-              <rect
-                x={x}
-                y={y}
-                width={barW}
-                height={h}
-                rx="6"
-                className="chart-bar"
-              />
-              {/* wartość nad słupkiem */}
-              <text
-                x={x + barW / 2}
-                y={y - 6}
-                textAnchor="middle"
-                fontSize="12"
-                fill="currentColor"
-                opacity="0.85"
-              >
+            <g key={key} style={{ cursor: "pointer" }} onPointerDown={(e) => onBarPointerDown(e, d)}>
+              <rect x={x} y={y} width={barW} height={h} rx="12" className={rectClass} style={{ fill }} />
+
+              {isSelected && (
+                <rect
+                  x={x}
+                  y={y}
+                  width={barW}
+                  height={h}
+                  rx="12"
+                  className="chart-bar-click-anim"
+                  style={{ fill }}
+                  key={`anim-${key}-${animKey}`}
+                  pointerEvents="none"
+                />
+              )}
+
+              <text x={xCenter} y={y - 8} textAnchor="middle" fontSize="12" fill="currentColor" opacity="0.9">
                 {d.value.toFixed(2)} {currency}
               </text>
-              {/* etykieta pod spodem */}
-              <text
-                x={x + barW / 2}
-                y={height - 10}
-                textAnchor="middle"
-                fontSize="12"
-                fill="currentColor"
-                opacity="0.75"
-              >
+
+              <text x={xCenter} y={height - 12} textAnchor="middle" fontSize="12" fill="currentColor" opacity="0.75">
                 {d.label}
               </text>
             </g>
@@ -109,14 +192,12 @@ function BarChart({ data, height = 240, currency = "" }) {
   );
 }
 
-/* ---------- główny komponent ---------- */
 export default function SummaryPanel() {
   const { currencySymbol } = useAppSettings();
 
   const [subs, setSubs] = useState([]);
-  const [mode, setMode] = useState("year"); // "year" | "month"
+  const [mode, setMode] = useState("year");
 
-  // sterowanie okresem
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
   const [monthISO, setMonthISO] = useState(`${now.getFullYear()}-${pad2(now.getMonth() + 1)}`);
@@ -136,54 +217,57 @@ export default function SummaryPanel() {
 
   const activeSubs = useMemo(() => subs.filter((s) => s.active), [subs]);
 
-  /* ------ agregacje ------ */
-
-  // Rok: 12 słupków miesięcznych
   const yearData = useMemo(() => {
     if (mode !== "year") return [];
     const start = new Date(year, 0, 1);
     const end = new Date(year, 11, 31);
+
     const months = Array.from({ length: 12 }, (_, m) => ({
+      id: `${year}-${pad2(m + 1)}`,
       key: `${year}-${pad2(m + 1)}`,
       label: new Intl.DateTimeFormat("pl-PL", { month: "short" }).format(new Date(year, m, 1)),
       value: 0,
+      full: new Intl.DateTimeFormat("pl-PL", { month: "long", year: "numeric" }).format(new Date(year, m, 1)),
     }));
 
     for (const s of activeSubs) {
       const occ = occurrencesFrom(s.anchor, start, end);
       for (const d of occ) {
         const k = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`;
-        const i = months.findIndex((x) => x.key === k);
-        if (i >= 0) months[i].value += s.price;
+        const idx = months.findIndex((x) => x.key === k);
+        if (idx >= 0) months[idx].value += s.price;
       }
     }
+
     return months;
   }, [activeSubs, mode, year]);
 
-  // Miesiąc: słupki per usługa (tylko płatności w wybranym miesiącu)
   const monthData = useMemo(() => {
     if (mode !== "month") return [];
     const [y, m] = monthISO.split("-").map((n) => parseInt(n, 10));
     const start = new Date(y, m - 1, 1);
     const end = new Date(y, m, 0);
-    const map = new Map(); // name -> suma
+
+    const map = new Map();
 
     for (const s of activeSubs) {
       const occ = occurrencesFrom(s.anchor, start, end);
-      if (occ.length) {
-        map.set(s.name, (map.get(s.name) || 0) + s.price);
-      }
+      if (occ.length) map.set(s.name, (map.get(s.name) || 0) + s.price);
     }
-    const rows = Array.from(map.entries()).map(([name, val]) => ({
+
+    let rows = Array.from(map.entries()).map(([name, val]) => ({
+      id: name,
       label: name.length > 10 ? `${name.slice(0, 9)}…` : name,
       value: val,
       full: name,
     }));
+
     rows.sort((a, b) => b.value - a.value);
+    rows = rows.slice(0, 10);
+
     return rows;
   }, [activeSubs, mode, monthISO]);
 
-  // sumy i topy
   const totalSelected = useMemo(() => {
     const arr = mode === "year" ? yearData : monthData;
     return arr.reduce((acc, r) => acc + r.value, 0);
@@ -194,13 +278,11 @@ export default function SummaryPanel() {
     return [...monthData].sort((a, b) => b.value - a.value).slice(0, 5);
   }, [mode, monthData]);
 
-  /* ------ UI ------ */
   return (
     <div className="stack gap">
       <section className="card stack gap">
         <h2>Podsumowanie</h2>
 
-        {/* przełącznik */}
         <div className="row gap">
           <select className="input" value={mode} onChange={(e) => setMode(e.target.value)}>
             <option value="year">Rocznie</option>
@@ -217,30 +299,24 @@ export default function SummaryPanel() {
               onChange={(e) => setYear(parseInt(e.target.value || `${now.getFullYear()}`, 10))}
             />
           ) : (
-            <input
-              className="input"
-              type="month"
-              value={monthISO}
-              onChange={(e) => setMonthISO(e.target.value)}
-            />
+            <input className="input" type="month" value={monthISO} onChange={(e) => setMonthISO(e.target.value)} />
           )}
         </div>
 
-        {/* wykres */}
         <div className="card inner">
           {mode === "year" ? (
             <>
               <h3>Wydatki w {year} r.</h3>
-              <BarChart data={yearData} currency={currencySymbol} />
+              <BarChart data={yearData} currency={currencySymbol} highlightMax={false} />
             </>
           ) : (
             <>
               <h3>
-                Wydatki w {new Intl.DateTimeFormat("pl-PL", { month: "long", year: "numeric" })
-                  .format(new Date(monthISO + "-01"))}
+                Wydatki w{" "}
+                {new Intl.DateTimeFormat("pl-PL", { month: "long", year: "numeric" }).format(new Date(monthISO + "-01"))}
               </h3>
               {monthData.length ? (
-                <BarChart data={monthData} currency={currencySymbol} />
+                <BarChart data={monthData} currency={currencySymbol} highlightMax={true} />
               ) : (
                 <div className="muted">Brak płatności w tym miesiącu.</div>
               )}
@@ -248,7 +324,6 @@ export default function SummaryPanel() {
           )}
         </div>
 
-        {/* metryki */}
         <div className="grid-2 gap">
           <div className="stat">
             <div className="stat-label">Suma za wybrany okres</div>
@@ -269,8 +344,9 @@ export default function SummaryPanel() {
               <div className="stat-label">TOP 5 (miesiąc)</div>
               <div className="stat-value" style={{ fontSize: "1rem", fontWeight: 700 }}>
                 {top5.length
-                  ? top5.map((t) => `${t.full || t.label}: ${t.value.toFixed(2)} ${currencySymbol}`).join("  •  ")
-                  : "—"}
+  ? top5.map((t, i) => (
+      <div key={i}>
+        {t.full || t.label}: {t.value.toFixed(2)} {currencySymbol}</div>)): "—"}
               </div>
             </div>
           )}
