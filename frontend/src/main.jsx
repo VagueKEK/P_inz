@@ -2,6 +2,9 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App.jsx';
 import './index.css';
+import axios from "axios";
+
+axios.defaults.withCredentials = true;
 
 const container = document.getElementById('root');
 if (!container) throw new Error('Brakuje <div id="root"></div> w index.html');

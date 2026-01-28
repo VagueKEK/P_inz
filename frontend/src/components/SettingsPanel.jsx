@@ -1,14 +1,6 @@
-// src/components/SettingsPanel.jsx
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import useNbpRates, { convert } from "../hooks/useNbpRates";
-
-// klucze w localStorage — spójne z wcześniejszymi
-const LS = {
-  LIMIT_ON: "limit_on",
-  LIMIT_VAL: "limit_val",
-  CURR_CODE: "currency_code",
-  CURR_SYM: "currency_symbol",
-};
+import useAppSettings from "../hooks/useAppSettings";
 
 const currencies = [
   { code: "PLN", symbol: "zł", label: "PLN — złoty" },
@@ -23,61 +15,38 @@ const toNum = (x) => {
 };
 
 export default function SettingsPanel() {
-  // wczytaj ustawienia
-  const [limitOn, setLimitOn] = useState(() => localStorage.getItem(LS.LIMIT_ON) === "1");
-  const [limitVal, setLimitVal] = useState(() => localStorage.getItem(LS.LIMIT_VAL) || "");
-  const [code, setCode] = useState(() => localStorage.getItem(LS.CURR_CODE) || "PLN");
-  const [symbol, setSymbol] = useState(() => localStorage.getItem(LS.CURR_SYM) || "zł");
+  const { loading: settingsLoading, saving, error: settingsError, currencyCode, currencySymbol, limitOn, limitVal, saveSettings } = useAppSettings();
 
-  // NBP
+  const [code, setCode] = useState(currencyCode || "PLN");
+  const [symbol, setSymbol] = useState(currencySymbol || "zł");
+  const [limitOnLocal, setLimitOnLocal] = useState(!!limitOn);
+  const [limitValLocal, setLimitValLocal] = useState(String(limitVal ?? ""));
+
+  const symTimer = useRef(null);
+  const limTimer = useRef(null);
+
+  useEffect(() => { setCode(currencyCode || "PLN"); }, [currencyCode]);
+  useEffect(() => { setSymbol(currencySymbol || "zł"); }, [currencySymbol]);
+  useEffect(() => { setLimitOnLocal(!!limitOn); }, [limitOn]);
+  useEffect(() => { setLimitValLocal(String(limitVal ?? "")); }, [limitVal]);
+
   const { loading, error, map, date } = useNbpRates();
 
-  // gdy zmieniasz kod waluty, ustaw domyślny symbol
-  useEffect(() => {
-    const found = currencies.find((c) => c.code === code);
-    if (found && symbol === "") setSymbol(found.symbol);
-  }, [code, symbol]);
-
-  // auto-zapis do localStorage + broadcast
-  useEffect(() => {
-    localStorage.setItem(LS.LIMIT_ON, limitOn ? "1" : "0");
-    window.dispatchEvent(new Event("app-settings-changed"));
-  }, [limitOn]);
-
-  useEffect(() => {
-    localStorage.setItem(LS.LIMIT_VAL, String(limitVal));
-    window.dispatchEvent(new Event("app-settings-changed"));
-  }, [limitVal]);
-
-  useEffect(() => {
-    localStorage.setItem(LS.CURR_CODE, code);
-    window.dispatchEvent(new Event("app-settings-changed"));
-  }, [code]);
-
-  useEffect(() => {
-    localStorage.setItem(LS.CURR_SYM, symbol);
-    window.dispatchEvent(new Event("app-settings-changed"));
-  }, [symbol]);
-
   const preview = useMemo(() => {
-    const n = toNum(limitVal);
-    if (!limitOn || n <= 0) return "Limit wyłączony";
+    const n = toNum(limitValLocal);
+    if (!limitOnLocal || n <= 0) return "Limit wyłączony";
     return `Limit: ${n.toFixed(2)} ${symbol}`;
-  }, [limitOn, limitVal, symbol]);
+  }, [limitOnLocal, limitValLocal, symbol]);
 
-  // ---- PRZELICZNIK ----
   const [amount, setAmount] = useState("1");
-  const [from, setFrom] = useState(code);   // startowo: aktualnie ustawiona waluta
-  const [to, setTo] = useState("EUR");      // domyślnie: EUR
+  const [from, setFrom] = useState(code);
+  const [to, setTo] = useState("EUR");
 
-  // gdy zmieni się ustawiona waluta — podmień 'from'
   useEffect(() => { setFrom(code); }, [code]);
 
-  // lista walut do selektorów (z mapy NBP + PLN, posortowane)
   const allCodes = useMemo(() => {
     const set = new Set(Object.keys(map || {}));
     set.add("PLN");
-    // preferowane na górze
     const fav = ["PLN", "EUR", "USD", "GBP"];
     const rest = [...set].filter((x) => !fav.includes(x)).sort();
     return [...fav.filter((x) => set.has(x)), ...rest];
@@ -87,82 +56,113 @@ export default function SettingsPanel() {
     return convert(toNum(amount), from, to, map || { PLN: 1 });
   }, [amount, from, to, map]);
 
-  // szybkie widgety: USTAWIONA WALUTA → (EUR / USD / GBP / PLN)
   const quickTargets = ["EUR", "USD", "GBP", "PLN"].filter((x) => x !== from);
   const quickRows = quickTargets.map((t) => ({
     to: t,
     val: convert(1, from, t, map || { PLN: 1 }),
   }));
 
+  const onToggleLimit = async (checked) => {
+    setLimitOnLocal(checked);
+    await saveSettings({ limit_on: checked });
+  };
+
+  const onChangeLimitVal = (v) => {
+    setLimitValLocal(v);
+    if (limTimer.current) clearTimeout(limTimer.current);
+    limTimer.current = setTimeout(() => {
+      const raw = String(v ?? "").replace(",", ".").trim();
+      const num = raw === "" ? 0 : toNum(raw);
+      saveSettings({ limit_val: num.toFixed(2) }).catch(() => {});
+    }, 350);
+  };
+
+  const onChangeSymbol = (v) => {
+    setSymbol(v);
+    if (symTimer.current) clearTimeout(symTimer.current);
+    symTimer.current = setTimeout(() => {
+      saveSettings({ currency_symbol: String(v ?? "") }).catch(() => {});
+    }, 350);
+  };
+
+  const onChangeCode = async (next) => {
+    setCode(next);
+    const f = currencies.find((c) => c.code === next);
+    const nextSym = f ? f.symbol : symbol;
+    setSymbol(nextSym);
+    await saveSettings({ currency_code: next, currency_symbol: nextSym });
+  };
+
   return (
     <div className="stack gap">
-      {/* Waluta + Limit */}
       <section className="card stack gap">
         <h2>Ustawienia</h2>
-        <div className="grid-2 gap">
-          {/* Waluta */}
-          <div className="card inner stack gap">
-            <h3>Waluta</h3>
-            <label className="stack">
-              <span className="muted">Kod waluty</span>
-              <select
-                className="input"
-                value={code}
-                onChange={(e) => {
-                  const next = e.target.value;
-                  setCode(next);
-                  const f = currencies.find((c) => c.code === next);
-                  if (f) setSymbol(f.symbol); // domyślny symbol
-                }}
-              >
-                {currencies.map((c) => (
-                  <option key={c.code} value={c.code}>
-                    {c.label}
-                  </option>
-                ))}
-              </select>
-            </label>
 
-            <label className="stack">
-              <span className="muted">Symbol waluty (możesz zmienić)</span>
-              <input
-                className="input"
-                value={symbol}
-                onChange={(e) => setSymbol(e.target.value)}
-                placeholder="np. zł, €, $, £"
-              />
-            </label>
-          </div>
+        {settingsLoading ? (
+          <div className="muted">Ładowanie…</div>
+        ) : (
+          <>
+            {settingsError ? <div className="muted">{String(settingsError)}</div> : null}
+            {saving ? <div className="muted">Zapisywanie…</div> : null}
 
-          {/* Limit */}
-          <div className="card inner stack gap">
-            <h3>Limit wydatków</h3>
-            <label className="row gap center">
-              <input
-                type="checkbox"
-                checked={limitOn}
-                onChange={(e) => setLimitOn(e.target.checked)}
-              />
-              Włącz miesięczny limit wydatków
-            </label>
-            <div className="row gap">
-              <input
-                className="input"
-                type="text"
-                inputMode="decimal"
-                placeholder={`np. 500,00`}
-                disabled={!limitOn}
-                value={limitVal}
-                onChange={(e) => setLimitVal(e.target.value)}
-              />
-              <div className="btn" style={{ pointerEvents: "none" }}>{symbol}</div>
+            <div className="grid-2 gap">
+              <div className="card inner stack gap">
+                <h3>Waluta</h3>
+                <label className="stack">
+                  <span className="muted">Kod waluty</span>
+                  <select
+                    className="input"
+                    value={code}
+                    onChange={(e) => onChangeCode(e.target.value)}
+                  >
+                    {currencies.map((c) => (
+                      <option key={c.code} value={c.code}>
+                        {c.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="stack">
+                  <span className="muted">Symbol waluty</span>
+                  <input
+                    className="input"
+                    value={symbol}
+                    onChange={(e) => onChangeSymbol(e.target.value)}
+                    placeholder="np. zł, €, $, £"
+                  />
+                </label>
+              </div>
+
+              <div className="card inner stack gap">
+                <h3>Limit wydatków</h3>
+                <label className="row gap center">
+                  <input
+                    type="checkbox"
+                    checked={limitOnLocal}
+                    onChange={(e) => onToggleLimit(e.target.checked)}
+                  />
+                  Włącz miesięczny limit wydatków
+                </label>
+                <div className="row gap">
+                  <input
+                    className="input"
+                    type="text"
+                    inputMode="decimal"
+                    placeholder="np. 500,00"
+                    disabled={!limitOnLocal}
+                    value={limitValLocal}
+                    onChange={(e) => onChangeLimitVal(e.target.value)}
+                  />
+                  <div className="btn" style={{ pointerEvents: "none" }}>{symbol}</div>
+                </div>
+                <div className="muted">{preview}</div>
+              </div>
             </div>
-            <div className="muted">{preview}</div>
-          </div>
-        </div>
+          </>
+        )}
       </section>
 
-      {/* Kursy NBP i przelicznik */}
       <section className="card stack gap">
         <h3>Kursy NBP i przelicznik</h3>
 
