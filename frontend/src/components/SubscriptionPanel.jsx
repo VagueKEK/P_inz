@@ -1,30 +1,24 @@
-// src/components/SubscriptionPanel.jsx
 import { useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 import useAppSettings from "../hooks/useAppSettings";
 
-// backend base
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
 const SUBS_PATH = "/api/subscriptions/";
 
-/* --- CSRF + session helpers --- */
 function getCookie(name) {
   const m = document.cookie.match(new RegExp("(^| )" + name + "=([^;]+)"));
   return m ? decodeURIComponent(m[2]) : null;
 }
 
 async function ensureCsrf() {
-  // ustawia cookie csrftoken po stronie backendu
   await fetch(`${API_BASE}/api/csrf/`, { credentials: "include" });
 }
 
-// axios client z cookies
 const http = axios.create({
   baseURL: API_BASE,
-  withCredentials: true, // <-- MUSI być, inaczej nie leci sessionid
+  withCredentials: true,
 });
 
-// interceptor: dopinamy CSRF do "unsafe" metod
 http.interceptors.request.use(async (config) => {
   const method = (config.method || "get").toLowerCase();
   if (["post", "put", "patch", "delete"].includes(method)) {
@@ -35,7 +29,6 @@ http.interceptors.request.use(async (config) => {
   return config;
 });
 
-/* helpers */
 const pad2 = (n) => (n < 10 ? `0${n}` : `${n}`);
 const toISO = (d) => {
   const dt = new Date(d);
@@ -51,16 +44,20 @@ const daysBetween = (a, b) => {
   const d2 = new Date(b); d2.setHours(0,0,0,0);
   return Math.round((d2 - d1) / 86400000);
 };
-const nextMonthlyDate = (anchor) => {
+
+const nextPaymentDate = (anchor, period) => {
   if (!isISO(anchor)) return null;
   const a = new Date(anchor);
   const t = new Date(); t.setHours(0,0,0,0);
   if (a >= t) return a;
   const baseDay = a.getDate();
+  const step = period === "yearly" ? 12 : 1;
   let y = a.getFullYear(), m = a.getMonth();
   let candidate = new Date(a);
   while (candidate < t) {
-    m += 1; if (m > 11) { m = 0; y += 1; }
+    m += step;
+    y += Math.floor(m / 12);
+    m = m % 12;
     const nd = new Date(y, m, 1);
     const last = new Date(y, m + 1, 0).getDate();
     nd.setDate(Math.min(baseDay, last));
@@ -76,87 +73,75 @@ export default function SubscriptionPanel() {
   const [name, setName] = useState("");
   const [price, setPrice] = useState("");
   const [date, setDate] = useState("");
+  const [period, setPeriod] = useState("monthly");
   const [editingId, setEditingId] = useState(null);
   const [editingPrice, setEditingPrice] = useState("");
   const [editingDate, setEditingDate] = useState("");
+  const [editingPeriod, setEditingPeriod] = useState("monthly");
   const [filterText, setFilterText] = useState("");
   const [sortOption, setSortOption] = useState("name-asc");
 
   const addNameRef = useRef(null);
 
   const fetchSubs = async () => {
-    // CSRF cookie też tu ustawiamy (nie boli), a potem GET z cookies sesji
-    await ensureCsrf();
     const res = await http.get(SUBS_PATH);
-    setSubs(Array.isArray(res.data) ? res.data : res.data.results || []);
+    const rows = Array.isArray(res.data) ? res.data : res.data.results || [];
+    setSubs(rows.map((r) => ({ ...r, period: r.period || "monthly" })));
   };
-
   useEffect(() => { fetchSubs(); }, []);
 
-  /* CRUD */
   const handleAdd = async () => {
     if (!name.trim() || !price || !date) return;
-
     await http.post(SUBS_PATH, {
       name: name.trim(),
       price: String(price).replace(",", "."),
       next_payment: date,
+      period,
       active: true,
     });
-
-    setName(""); setPrice(""); setDate("");
+    setName(""); setPrice(""); setDate(""); setPeriod("monthly");
     await fetchSubs();
     addNameRef.current?.focus();
   };
 
-  const handleDelete = async (id) => {
-    await http.delete(`${SUBS_PATH}${id}/`);
-    fetchSubs();
-  };
-
-  const handleToggleActive = async (id, active) => {
-    await http.patch(`${SUBS_PATH}${id}/`, { active: !active });
-    fetchSubs();
-  };
+  const handleDelete = async (id) => { await http.delete(`${SUBS_PATH}${id}/`); fetchSubs(); };
+  const handleToggleActive = async (id, active) => { await http.patch(`${SUBS_PATH}${id}/`, { active: !active }); fetchSubs(); };
 
   const startEditing = (s) => {
     setEditingId(s.id);
     setEditingPrice(s.price ?? "");
     setEditingDate(s.next_payment ?? s.next_payment_date ?? "");
+    setEditingPeriod(s.period || "monthly");
   };
 
   const cancelEdit = () => {
     setEditingId(null);
     setEditingPrice("");
     setEditingDate("");
+    setEditingPeriod("monthly");
   };
 
   const saveEdit = async (id) => {
     await http.patch(`${SUBS_PATH}${id}/`, {
       price: String(editingPrice).replace(",", "."),
       next_payment: editingDate || null,
+      period: editingPeriod,
     });
-    cancelEdit();
-    fetchSubs();
+    cancelEdit(); fetchSubs();
   };
 
-  /* listy */
   const filterSubs = (arr) =>
-    arr.filter((s) => (s.name || "").toLowerCase().includes(filterText.toLowerCase()));
+    arr.filter((s) => s.name.toLowerCase().includes(filterText.toLowerCase()));
 
   const sortSubs = (arr) => {
     const r = [...arr];
     switch (sortOption) {
-      case "name-asc": r.sort((a,b)=>(a.name||"").localeCompare(b.name||"")); break;
-      case "name-desc": r.sort((a,b)=>(b.name||"").localeCompare(a.name||"")); break;
+      case "name-asc": r.sort((a,b)=>a.name.localeCompare(b.name)); break;
+      case "name-desc": r.sort((a,b)=>b.name.localeCompare(a.name)); break;
       case "price-asc": r.sort((a,b)=>toNum(a.price)-toNum(b.price)); break;
       case "price-desc": r.sort((a,b)=>toNum(b.price)-toNum(a.price)); break;
-      case "date-asc":
-        r.sort((a,b)=>new Date(a.next_payment||a.next_payment_date||"2100-01-01")-new Date(b.next_payment||b.next_payment_date||"2100-01-01"));
-        break;
-      case "date-desc":
-        r.sort((a,b)=>new Date(b.next_payment||b.next_payment_date||"1900-01-01")-new Date(a.next_payment||a.next_payment_date||"1900-01-01"));
-        break;
+      case "date-asc": r.sort((a,b)=>new Date(a.next_payment||a.next_payment_date||"2100-01-01")-new Date(b.next_payment||b.next_payment_date||"2100-01-01")); break;
+      case "date-desc": r.sort((a,b)=>new Date(b.next_payment||b.next_payment_date||"1900-01-01")-new Date(a.next_payment||a.next_payment_date||"1900-01-01")); break;
       default: break;
     }
     return r;
@@ -171,29 +156,28 @@ export default function SubscriptionPanel() {
     [subs, filterText, sortOption]
   );
 
-  /* suma wszystkich aktywnych (niezależnie od filtra) */
-  const monthlyTotal = subs.filter(s=>s.active).reduce((acc, x)=> acc + toNum(x.price), 0);
+  const monthlyTotal = subs.filter(s=>s.active).reduce((acc, x)=> {
+    const p = toNum(x.price);
+    const per = x.period || "monthly";
+    return acc + (per === "yearly" ? p / 12 : p);
+  }, 0);
 
-  /* najbliższa płatność */
   const todayISO = useMemo(() => toISO(new Date()), []);
   const nextPayment = useMemo(() => {
     const valids = activeSubs.map(s => ({
       ...s,
-      anchor: s.next_payment || s.next_payment_date || null
+      anchor: s.next_payment || s.next_payment_date || null,
+      period: s.period || "monthly"
     })).filter(s => isISO(s.anchor));
-
     if (!valids.length) return null;
-
     const cand = valids.map(s => {
-      const due = nextMonthlyDate(s.anchor);
+      const due = nextPaymentDate(s.anchor, s.period);
       return due ? ({ ...s, due, days: daysBetween(todayISO, due) }) : null;
     }).filter(Boolean);
-
     cand.sort((a,b)=>a.due - b.due);
     return cand[0] || null;
   }, [activeSubs, todayISO]);
 
-  /* limit – tylko z ustawień (UI usunięty) */
   const limitNum = toNum(limitVal);
   const overLimit = limitOn && limitNum > 0 && monthlyTotal > limitNum;
 
@@ -207,33 +191,27 @@ export default function SubscriptionPanel() {
           {!isEditing ? (
             <div className="sub-meta">
               <span className="badge">{toNum(s.price).toFixed(2)} {currencySymbol}</span>
+              <span className="badge">{(s.period || "monthly") === "yearly" ? "roczna" : "miesięczna"}</span>
               <span className="muted"> — {dateLabel}</span>
             </div>
           ) : (
             <div className="edit-inline">
-              <input
-                type="number"
-                step="0.01"
-                className="input sm"
-                value={editingPrice}
-                onChange={(e)=>setEditingPrice(e.target.value)}
-              />
-              <input
-                type="date"
-                className="input sm"
-                value={editingDate}
-                onChange={(e)=>setEditingDate(e.target.value)}
-              />
+              <input type="number" step="0.01" className="input sm"
+                     value={editingPrice} onChange={(e)=>setEditingPrice(e.target.value)} />
+              <input type="date" className="input sm"
+                     value={editingDate} onChange={(e)=>setEditingDate(e.target.value)} />
+              <select className="input sm" value={editingPeriod} onChange={(e)=>setEditingPeriod(e.target.value)}>
+                <option value="monthly">miesięczna</option>
+                <option value="yearly">roczna</option>
+              </select>
             </div>
           )}
         </div>
         <div className="sub-actions">
           {!isEditing ? (
             <>
-              <button
-                className={s.active ? "btn btn-amber" : "btn btn-green"}
-                onClick={() => handleToggleActive(s.id, s.active)}
-              >
+              <button className={s.active ? "btn btn-amber" : "btn btn-green"}
+                      onClick={() => handleToggleActive(s.id, s.active)}>
                 {s.active ? "Dezaktywuj" : "Aktywuj"}
               </button>
               <button className="btn btn-sky" onClick={() => startEditing(s)}>Edytuj</button>
@@ -252,41 +230,28 @@ export default function SubscriptionPanel() {
 
   return (
     <>
-      {/* dodawanie */}
       <section className="card stack gap">
         <h2>Panel Subskrypcji</h2>
         <div className="grid-3 gap">
-          <input
-            ref={addNameRef}
-            type="text"
-            className="input"
-            placeholder="Nazwa (np. Spotify)"
-            value={name}
-            onChange={(e)=>setName(e.target.value)}
-          />
-          <input
-            type="number"
-            step="0.01"
-            className="input"
-            placeholder="Cena"
-            value={price}
-            onChange={(e)=>setPrice(e.target.value)}
-          />
-          <div className="row">
-            <input
-              type="date"
-              className="input"
-              value={date}
-              onChange={(e)=>setDate(e.target.value)}
-            />
+          <input ref={addNameRef} type="text" className="input"
+                 placeholder="Nazwa (np. Spotify)"
+                 value={name} onChange={(e)=>setName(e.target.value)} />
+          <input type="number" step="0.01" className="input"
+                 placeholder="Cena"
+                 value={price} onChange={(e)=>setPrice(e.target.value)} />
+          <div className="row gap">
+            <input type="date" className="input"
+                   value={date} onChange={(e)=>setDate(e.target.value)} />
+            <select className="input" value={period} onChange={(e)=>setPeriod(e.target.value)}>
+              <option value="monthly">miesięczna</option>
+              <option value="yearly">roczna</option>
+            </select>
             <button className="btn btn-green" onClick={handleAdd}>Dodaj</button>
           </div>
         </div>
       </section>
 
-      {/* layout 2-kolumnowy */}
       <div className="grid-2 gap mt">
-        {/* lewa kolumna */}
         <section className="card stack gap">
           <h3>Podsumowanie</h3>
 
@@ -318,16 +283,10 @@ export default function SubscriptionPanel() {
           </div>
         </section>
 
-        {/* prawa kolumna */}
         <section className="stack gap">
           <div className="row gap">
-            <input
-              type="text"
-              className="input"
-              placeholder="Filtruj nazwę…"
-              value={filterText}
-              onChange={(e)=>setFilterText(e.target.value)}
-            />
+            <input type="text" className="input" placeholder="Filtruj nazwę…"
+                   value={filterText} onChange={(e)=>setFilterText(e.target.value)} />
             <select className="input" value={sortOption} onChange={(e)=>setSortOption(e.target.value)}>
               <option value="name-asc">Nazwa A–Z</option>
               <option value="name-desc">Nazwa Z–A</option>

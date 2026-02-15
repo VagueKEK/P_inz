@@ -1,9 +1,11 @@
+// src/components/SummaryPanel.jsx
 import { useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import useAppSettings from "../hooks/useAppSettings";
 import { createPortal } from "react-dom";
 
-const API_URL = "http://localhost:8000/api/subscriptions/";
+const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const API_URL = `${API_BASE}/api/subscriptions/`;
 
 const pad2 = (n) => (n < 10 ? `0${n}` : `${n}`);
 const isISO = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ""));
@@ -12,36 +14,41 @@ const toNum = (x) => {
   return Number.isFinite(n) ? n : 0;
 };
 
-function occurrencesFrom(anchorISO, startDate, untilDate) {
+function addStep(cur, baseDay, stepMonths) {
+  const y = cur.getFullYear();
+  const m = cur.getMonth() + stepMonths;
+  const ny = y + Math.floor(m / 12);
+  const nm = ((m % 12) + 12) % 12;
+  const nd = new Date(ny, nm, 1);
+  const last = new Date(ny, nm + 1, 0).getDate();
+  nd.setDate(Math.min(baseDay, last));
+  nd.setHours(0, 0, 0, 0);
+  return nd;
+}
+
+function occurrencesFrom(anchorISO, period, startDate, untilDate) {
   if (!isISO(anchorISO)) return [];
   const anchor = new Date(anchorISO + "T00:00:00");
+  anchor.setHours(0, 0, 0, 0);
+
+  const step = period === "yearly" ? 12 : 1;
   const baseDay = anchor.getDate();
 
   let first = new Date(anchor);
+  first.setHours(0, 0, 0, 0);
+
   while (first < startDate) {
-    const y = first.getFullYear();
-    const m = first.getMonth() + 1;
-    const ny = m > 11 ? y + 1 : y;
-    const nm = m > 11 ? 0 : m;
-    const nd = new Date(ny, nm, 1);
-    const last = new Date(ny, nm + 1, 0).getDate();
-    nd.setDate(Math.min(baseDay, last));
-    first = nd;
+    first = addStep(first, baseDay, step);
   }
 
   const out = [];
   let cur = first;
+
   while (cur <= untilDate) {
     out.push(new Date(cur));
-    const y = cur.getFullYear();
-    const m = cur.getMonth() + 1;
-    const ny = m > 11 ? y + 1 : y;
-    const nm = m > 11 ? 0 : m;
-    const nd = new Date(ny, nm, 1);
-    const last = new Date(ny, nm + 1, 0).getDate();
-    nd.setDate(Math.min(baseDay, last));
-    cur = nd;
+    cur = addStep(cur, baseDay, step);
   }
+
   return out;
 }
 
@@ -203,16 +210,20 @@ export default function SummaryPanel() {
   const [monthISO, setMonthISO] = useState(`${now.getFullYear()}-${pad2(now.getMonth() + 1)}`);
 
   useEffect(() => {
-    axios.get(API_URL).then(({ data }) => {
-      const rows = Array.isArray(data) ? data : data.results || [];
-      setSubs(
-        rows.map((r) => ({
-          ...r,
-          price: toNum(r.price),
-          anchor: r.next_payment ?? r.next_payment_date ?? null,
-        }))
-      );
-    });
+    axios
+      .get(API_URL, { withCredentials: true })
+      .then(({ data }) => {
+        const rows = Array.isArray(data) ? data : data.results || [];
+        setSubs(
+          rows.map((r) => ({
+            ...r,
+            price: toNum(r.price),
+            anchor: r.next_payment ?? r.next_payment_date ?? null,
+            period: r.period || "monthly",
+          }))
+        );
+      })
+      .catch(() => setSubs([]));
   }, []);
 
   const activeSubs = useMemo(() => subs.filter((s) => s.active), [subs]);
@@ -221,6 +232,8 @@ export default function SummaryPanel() {
     if (mode !== "year") return [];
     const start = new Date(year, 0, 1);
     const end = new Date(year, 11, 31);
+    start.setHours(0, 0, 0, 0);
+    end.setHours(0, 0, 0, 0);
 
     const months = Array.from({ length: 12 }, (_, m) => ({
       id: `${year}-${pad2(m + 1)}`,
@@ -231,7 +244,7 @@ export default function SummaryPanel() {
     }));
 
     for (const s of activeSubs) {
-      const occ = occurrencesFrom(s.anchor, start, end);
+      const occ = occurrencesFrom(s.anchor, s.period, start, end);
       for (const d of occ) {
         const k = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`;
         const idx = months.findIndex((x) => x.key === k);
@@ -247,12 +260,14 @@ export default function SummaryPanel() {
     const [y, m] = monthISO.split("-").map((n) => parseInt(n, 10));
     const start = new Date(y, m - 1, 1);
     const end = new Date(y, m, 0);
+    start.setHours(0, 0, 0, 0);
+    end.setHours(0, 0, 0, 0);
 
     const map = new Map();
 
     for (const s of activeSubs) {
-      const occ = occurrencesFrom(s.anchor, start, end);
-      if (occ.length) map.set(s.name, (map.get(s.name) || 0) + s.price);
+      const occ = occurrencesFrom(s.anchor, s.period, start, end);
+      if (occ.length) map.set(s.name, (map.get(s.name) || 0) + s.price * occ.length);
     }
 
     let rows = Array.from(map.entries()).map(([name, val]) => ({
@@ -344,9 +359,12 @@ export default function SummaryPanel() {
               <div className="stat-label">TOP 5 (miesiąc)</div>
               <div className="stat-value" style={{ fontSize: "1rem", fontWeight: 700 }}>
                 {top5.length
-  ? top5.map((t, i) => (
-      <div key={i}>
-        {t.full || t.label}: {t.value.toFixed(2)} {currencySymbol}</div>)): "—"}
+                  ? top5.map((t, i) => (
+                      <div key={i}>
+                        {t.full || t.label}: {t.value.toFixed(2)} {currencySymbol}
+                      </div>
+                    ))
+                  : "—"}
               </div>
             </div>
           )}

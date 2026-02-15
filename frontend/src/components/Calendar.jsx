@@ -1,11 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import axios from "axios";
 
-const API_ROOT = "http://localhost:8000";
+const API_ROOT = import.meta.env.VITE_API_URL || "http://localhost:8000";
 const API_URL = `${API_ROOT}/api/subscriptions/`;
 const getCurrencySymbol = () => localStorage.getItem("currency_symbol") || "zł";
 
-/* ---------- helpers ---------- */
 const pad2 = (n) => (n < 10 ? `0${n}` : `${n}`);
 const iso = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 const isISO = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ""));
@@ -14,44 +13,46 @@ const toNum = (x) => {
   return Number.isFinite(n) ? n : 0;
 };
 
-// miesięczne wystąpienia w danym zakresie (z obsługą końca miesiąca)
-function occurrencesFrom(anchorISO, startDate, untilDate) {
+function addStep(cur, baseDay, stepMonths) {
+  const y = cur.getFullYear();
+  const m = cur.getMonth() + stepMonths;
+  const ny = y + Math.floor(m / 12);
+  const nm = m % 12;
+  const nd = new Date(ny, nm, 1);
+  const last = new Date(ny, nm + 1, 0).getDate();
+  nd.setDate(Math.min(baseDay, last));
+  nd.setHours(0, 0, 0, 0);
+  return nd;
+}
+
+function occurrencesFrom(anchorISO, period, startDate, untilDate) {
   if (!isISO(anchorISO)) return [];
   const anchor = new Date(anchorISO + "T00:00:00");
-  const baseDay = anchor.getDate();
+  anchor.setHours(0, 0, 0, 0);
 
-  // wyznacz pierwsze >= startDate
+  const baseDay = anchor.getDate();
+  const step = period === "yearly" ? 12 : 1;
+
   let first = new Date(anchor);
+  first.setHours(0, 0, 0, 0);
+
   while (first < startDate) {
-    const y = first.getFullYear();
-    const m = first.getMonth() + 1;
-    const ny = m > 11 ? y + 1 : y;
-    const nm = m > 11 ? 0 : m;
-    const nd = new Date(ny, nm, 1);
-    const last = new Date(ny, nm + 1, 0).getDate();
-    nd.setDate(Math.min(baseDay, last));
-    first = nd;
+    first = addStep(first, baseDay, step);
   }
 
   const out = [];
   let cur = first;
+
   while (cur <= untilDate) {
     out.push(new Date(cur));
-    const y = cur.getFullYear();
-    const m = cur.getMonth() + 1;
-    const ny = m > 11 ? y + 1 : y;
-    const nm = m > 11 ? 0 : m;
-    const nd = new Date(ny, nm, 1);
-    const last = new Date(ny, nm + 1, 0).getDate();
-    nd.setDate(Math.min(baseDay, last));
-    cur = nd;
+    cur = addStep(cur, baseDay, step);
   }
+
   return out;
 }
 
-// najbliższe (>= today) pojedyncze wystąpienie dla suba
-function nextOccurrence(anchorISO, today) {
-  const hits = occurrencesFrom(anchorISO, today, new Date(today.getFullYear() + 2, 11, 31)); // bufor 2 lata
+function nextOccurrence(anchorISO, period, today) {
+  const hits = occurrencesFrom(anchorISO, period, today, new Date(today.getFullYear() + 2, 11, 31));
   return hits[0] || null;
 }
 
@@ -62,37 +63,47 @@ export default function Calendar() {
     return new Date(d.getFullYear(), d.getMonth(), 1);
   });
 
-  // waluta: czytana przy każdym renderze (łapie zmiany z Ustawień)
   const currency = getCurrencySymbol();
 
   useEffect(() => {
     axios
-      .get(API_URL)
+      .get(API_URL, { withCredentials: true })
       .then(({ data }) => {
         const rows = Array.isArray(data) ? data : data.results || [];
         setSubs(
           rows.map((r) => ({
             ...r,
             next_payment_date: r.next_payment ?? null,
+            period: r.period || "monthly",
           }))
         );
       })
       .catch((e) => console.error(e));
   }, []);
 
-  // zakres miesiąca
-  const monthStart = useMemo(() => new Date(month.getFullYear(), month.getMonth(), 1), [month]);
-  const monthEnd = useMemo(() => new Date(month.getFullYear(), month.getMonth() + 1, 0), [month]);
+  const monthStart = useMemo(() => {
+    const d = new Date(month.getFullYear(), month.getMonth(), 1);
+    d.setHours(0, 0, 0, 0);
+    return d;
+  }, [month]);
 
-  // siatka 6x7 (pon-start)
+  const monthEnd = useMemo(() => {
+    const d = new Date(month.getFullYear(), month.getMonth() + 1, 0);
+    d.setHours(0, 0, 0, 0);
+    return d;
+  }, [month]);
+
   const grid = useMemo(() => {
-    const firstDow = (monthStart.getDay() + 6) % 7; // 0=pon
+    const firstDow = (monthStart.getDay() + 6) % 7;
     const cells = [];
     const start = new Date(monthStart);
     start.setDate(start.getDate() - firstDow);
+    start.setHours(0, 0, 0, 0);
+
     for (let i = 0; i < 42; i++) {
       const d = new Date(start);
       d.setDate(start.getDate() + i);
+      d.setHours(0, 0, 0, 0);
       cells.push(d);
     }
     return cells;
@@ -100,39 +111,38 @@ export default function Calendar() {
 
   const activeSubs = useMemo(() => subs.filter((s) => s.active), [subs]);
 
-  // mapa wydarzeń w miesiącu
   const eventsMap = useMemo(() => {
     const map = new Map();
     for (const s of activeSubs) {
-      const occ = occurrencesFrom(s.next_payment_date, monthStart, monthEnd);
+      const occ = occurrencesFrom(s.next_payment_date, s.period, monthStart, monthEnd);
       for (const d of occ) {
         const key = iso(d);
         const arr = map.get(key) || [];
-        arr.push({ id: s.id, name: s.name, price: toNum(s.price) });
+        arr.push({ id: s.id, name: s.name, price: toNum(s.price), period: s.period });
         map.set(key, arr);
       }
     }
     return map;
   }, [activeSubs, monthStart, monthEnd]);
 
-  // WYZNACZ GLOBALNIE NAJBLIŻSZĄ PŁATNOŚĆ (>= dziś)
   const today = useMemo(() => {
     const t = new Date();
     t.setHours(0, 0, 0, 0);
     return t;
   }, []);
 
+  const todayISO = useMemo(() => iso(today), [today]);
+
   const nearestISO = useMemo(() => {
     let best = null;
     for (const s of activeSubs) {
-      const hit = nextOccurrence(s.next_payment_date, today);
+      const hit = nextOccurrence(s.next_payment_date, s.period, today);
       if (!hit) continue;
       if (!best || hit < best) best = hit;
     }
     return best ? iso(best) : null;
   }, [activeSubs, today]);
 
-  // etykieta miesiąca
   const monthLabel = useMemo(() => {
     const fmt = new Intl.DateTimeFormat("pl-PL", { month: "long", year: "numeric" });
     return fmt.format(monthStart);
@@ -145,16 +155,16 @@ export default function Calendar() {
     setMonth(new Date(d.getFullYear(), d.getMonth(), 1));
   };
 
-  // lista „nadchodzących” (30 dni)
   const upcoming = useMemo(() => {
     const horizon = new Date(today);
     horizon.setDate(horizon.getDate() + 30);
+
     const arr = [];
     for (const s of activeSubs) {
-      const occ = occurrencesFrom(s.next_payment_date, today, horizon);
+      const occ = occurrencesFrom(s.next_payment_date, s.period, today, horizon);
       for (const d of occ) {
         const diff = Math.ceil((d - today) / 86400000);
-        arr.push({ id: s.id, name: s.name, price: toNum(s.price), date: new Date(d), inDays: diff });
+        arr.push({ id: s.id, name: s.name, price: toNum(s.price), date: new Date(d), inDays: diff, period: s.period });
       }
     }
     arr.sort((a, b) => a.date - b.date || a.name.localeCompare(b.name));
@@ -173,35 +183,35 @@ export default function Calendar() {
         <div />
       </div>
 
-      {/* LEWA: większy kalendarz | PRAWA: węższy sidebar */}
       <div className="cal-layout gap">
-        {/* Kalendarz */}
         <div className="card cal-main">
           <div className="cal-grid cal-head">
             {["Pn","Wt","Śr","Cz","Pt","So","Nd"].map((d) => (
               <div key={d} className="cal-head-cell muted">{d}</div>
             ))}
           </div>
+
           <div className="cal-grid">
             {grid.map((d, i) => {
-              const todayISO = useMemo(() => iso(today), [today]);  
               const inMonth = d.getMonth() === monthStart.getMonth();
               const k = iso(d);
               const items = eventsMap.get(k) || [];
               const sum = items.reduce((acc, x) => acc + x.price, 0);
               const isNearestHere = nearestISO && k === nearestISO && inMonth;
               const isTodayHere = k === todayISO && inMonth;
+
               return (
                 <div
                   key={i}
-                    className={`cal-cell ${inMonth ? "" : "cal-dim"} ${isNearestHere ? "cal-soon" : ""} ${isTodayHere ? "cal-today" : ""}`}
+                  className={`cal-cell ${inMonth ? "" : "cal-dim"} ${isNearestHere ? "cal-soon" : ""} ${isTodayHere ? "cal-today" : ""}`}
                   title={isNearestHere ? "Najbliższa płatność" : undefined}
                 >
                   <div className="cal-day">{d.getDate()}</div>
+
                   {items.length > 0 && (
                     <div className="cal-events">
                       {items.slice(0,3).map((ev) => (
-                        <div key={ev.id} className="cal-pill">
+                        <div key={`${ev.id}-${ev.name}`} className="cal-pill">
                           {ev.name} — {ev.price.toFixed(2)} {currency}
                         </div>
                       ))}
@@ -217,7 +227,6 @@ export default function Calendar() {
           </div>
         </div>
 
-        {/* Nadchodzące płatności */}
         <div className="card cal-sidebar">
           <h3>Nadchodzące (30 dni)</h3>
           {upcoming.length === 0 ? (
