@@ -24,7 +24,6 @@ export function AccessibilityProvider({ children }) {
     } catch {}
   }, []);
 
-  // persist + apply
   useEffect(() => {
     const s = { enabled, highContrast, fontScale, reduceMotion, focusOutline };
     localStorage.setItem('a11y', JSON.stringify(s));
@@ -39,7 +38,6 @@ export function AccessibilityProvider({ children }) {
     }
   }, [enabled, highContrast, fontScale, reduceMotion, focusOutline]);
 
-  // actions
   const toggleEnabled = () => setEnabled(v => !v);
   const increaseFont = () => setFontScale(v => Math.min(1.6, +(v + 0.1).toFixed(2)));
   const decreaseFont = () => setFontScale(v => Math.max(0.8, +(v - 0.1).toFixed(2)));

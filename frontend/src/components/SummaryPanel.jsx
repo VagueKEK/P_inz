@@ -1,4 +1,3 @@
-// src/components/SummaryPanel.jsx
 import { useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import useAppSettings from "../hooks/useAppSettings";

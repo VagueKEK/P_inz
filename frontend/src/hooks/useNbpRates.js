@@ -1,4 +1,3 @@
-// src/hooks/useNbpRates.js
 import { useEffect, useState } from "react";
 
 // NBP: tabela A (kursy średnie) — PLN jako waluta bazowa

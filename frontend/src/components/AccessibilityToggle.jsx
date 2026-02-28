@@ -12,19 +12,16 @@ export default function AccessibilityToggle() {
   const [open, setOpen] = useState(false);
 
   const onMainClick = () => {
-    // jeśli ON → wyłącz i zamknij panel
     if (highContrast) {
       toggleHighContrast();
       setOpen(false);
       return;
     }
-    // jeśli OFF → włącz i otwórz panel
     if (!enabled) toggleEnabled();
     toggleHighContrast();
     setOpen(true);
   };
 
-  // Alt + A — tylko otwórz/zamknij panel (bez zmiany HC)
   useEffect(() => {
     const onKey = (e) => {
       if (e.altKey && (e.key === 'a' || e.key === 'A')) {
